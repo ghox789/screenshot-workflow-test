@@ -1,0 +1,50 @@
+# Run in YOUR OWN public test repo. LAB_BOT_TOKEN = a dummy secret value
+# (e.g. "DUMMY-NOT-A-REAL-TOKEN"); the PoC only proves it is readable.
+name: Update All Screenshots (lab)
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number
+        required: false
+jobs:
+  compute-sha:
+    runs-on: ubuntu-latest
+    outputs:
+      SHA: ${{ steps.sha.outputs.SHA }}
+    steps:
+      - id: sha
+        env:
+          REF: ${{ inputs.pr && format('refs/pull/{0}/head', inputs.pr) || 'refs/heads/main' }}
+        # Resolved LIVE at job start (git ls-remote)
+        run: echo "SHA=$(git ls-remote https://github.com/${{ github.repository }} "$REF" | cut -f1)" >> "$GITHUB_OUTPUT"
+  commit-new-screenshots:            # "untrusted" job, no permissions
+    runs-on: ubuntu-latest
+    needs: compute-sha
+    permissions: {}
+    steps:
+      - uses: actions/checkout@v5
+        with: { ref: "${{ needs.compute-sha.outputs.SHA }}", fetch-depth: 0, persist-credentials: false }
+      - run: |
+          npm ci
+          ./build/updateScreenshots.py
+          git -c user.name=bot -c user.email=bot@x commit --allow-empty -m 'Update screenshots' || true
+      - uses: actions/cache/save@v4
+        with:
+          path: .git/
+          key: screenshot-commits-${{ needs.compute-sha.outputs.SHA }}
+  manage-pr:                          # "trusted" job, token in env
+    runs-on: ubuntu-latest
+    needs: [compute-sha, commit-new-screenshots]
+    steps:
+      - uses: actions/checkout@v5
+        with: { ref: "${{ needs.compute-sha.outputs.SHA }}", fetch-depth: 0, persist-credentials: false }
+      - uses: actions/cache/restore@v4
+        with:
+          path: .git/
+          key: screenshot-commits-${{ needs.compute-sha.outputs.SHA }}
+      - env:
+          GH_TOKEN: ${{ secrets.LAB_BOT_TOKEN }}
+        run: |
+          git checkout -b update-screenshots
+          git push -f origin HEAD:refs/heads/update-screenshots || true
